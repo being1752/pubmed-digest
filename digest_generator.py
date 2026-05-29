@@ -1,13 +1,96 @@
-"""核心调度：抓取论文 → 构建合规 Prompt → AI 生成解说词。"""
+"""核心调度：抓取论文 → 构建合规 AITDA Prompt → AI 生成各平台短视频脚本。"""
 
 import logging
+import re
 from datetime import date
+from dataclasses import dataclass
 
 from config import Config
 from pubmed_client import PubMedClient, Paper
 from ai_client import DeepSeekClient
 
 logger = logging.getLogger(__name__)
+
+# ── AITDA 各段字数比例 ────────────────────────────────────────────────────────
+# 行动段 = 总字数 - 其余四段之和，保证总和与配置字数精确一致
+#   钩子 10% | 兴趣 25% | 信任 31% | 欲望 25% | 行动 ~9%
+_RATIO_HOOK     = 0.10
+_RATIO_INTEREST = 0.25
+_RATIO_TRUST    = 0.31
+_RATIO_DESIRE   = 0.25
+
+
+def _compute_sections(total: int) -> tuple[int, int, int, int, int]:
+    """按比例将总字数分配到 AITDA 各段；行动段取余数保证总和精确。"""
+    hook     = round(total * _RATIO_HOOK)
+    interest = round(total * _RATIO_INTEREST)
+    trust    = round(total * _RATIO_TRUST)
+    desire   = round(total * _RATIO_DESIRE)
+    action   = total - hook - interest - trust - desire
+    return hook, interest, trust, desire, action
+
+
+# ── 平台静态元数据（字数从配置文件读取，不在这里写死）────────────────────────
+@dataclass(frozen=True)
+class _PlatformMeta:
+    name: str
+    style: str
+    duration: str
+
+
+_PLATFORM_META: dict[str, _PlatformMeta] = {
+    "douyin": _PlatformMeta(
+        name="抖音",
+        style="年轻化、节奏感强，开头必须有强烈反问或反常识悬念，让人停下来看",
+        duration="约60秒",
+    ),
+    "shipinghao": _PlatformMeta(
+        name="视频号",
+        style="专业、权威、温和，受众偏成熟，节奏稳健，有科学感和信任感",
+        duration="约90秒",
+    ),
+    "xiaohongshu": _PlatformMeta(
+        name="小红书",
+        style="生活化、口语化、有亲切感，像朋友分享，轻松不说教",
+        duration="约50秒",
+    ),
+}
+
+# 供 main.py 等外部引用的平台 key 列表
+ALL_PLATFORM_KEYS: list[str] = list(_PLATFORM_META.keys())
+
+
+# ── 运行时平台配置（含从配置文件读入的字数 + 按比例计算的各段字数）────────────
+@dataclass
+class PlatformConfig:
+    key: str
+    name: str
+    style: str
+    duration: str
+    total_words: int   # 来自配置文件
+    hook: int          # 自动按比例计算
+    interest: int
+    trust: int
+    desire: int
+    action: int
+
+
+def _make_platform_config(key: str, total_words: int) -> PlatformConfig:
+    meta = _PLATFORM_META[key]
+    hook, interest, trust, desire, action = _compute_sections(total_words)
+    return PlatformConfig(
+        key=key,
+        name=meta.name,
+        style=meta.style,
+        duration=meta.duration,
+        total_words=total_words,
+        hook=hook,
+        interest=interest,
+        trust=trust,
+        desire=desire,
+        action=action,
+    )
+
 
 # ── 系统 Prompt：合规规则 ─────────────────────────────────────────────────────
 SYSTEM_PROMPT = """你是一位严谨、专业的医学健康科普内容创作者，服务于一个医学与健康知识科普频道。
@@ -44,82 +127,67 @@ SYSTEM_PROMPT = """你是一位严谨、专业的医学健康科普内容创作�
 - 用"研究发现"、"科学家观察到"、"数据显示"等引导，而非"你应该"
 - 结尾固定加上免责提示"""
 
-# ── 用户 Prompt 模板：单段完整版 ─────────────────────────────────────────────
-USER_PROMPT_TEMPLATE = """以下是 {date_label} 在 PubMed 上发表的医学研究（共 {count} 篇），请据此撰写数字人科普解说词。
+# ── AITDA Prompt 模板 ─────────────────────────────────────────────────────────
+AITDA_USER_PROMPT_TEMPLATE = """以下是 {date_label} 在 PubMed 上发表的 {count} 篇医学研究，请为每篇撰写适合【{platform_name}】平台的 AITDA 结构短视频脚本。
+
+【平台风格】{style}
+【目标视频时长】{duration}，总字数约 {total_words} 字
 
 【论文清单】
 {paper_list}
 
-【输出要求】
-- 总长度：450–650字中文
-- 自然分段，2–3段，不加编号或标题
-- 选取最有科普价值、最贴近普通人生活的发现重点呈现
-- 每引用一篇研究须标注：（来源：《期刊名》，发表于 XXXX 年）
-- 语气温和、积极、有亲和力，适合数字人口播
-- 结尾必须包含："以上内容仅供健康科普参考，如有健康问题，请及时咨询专业医生。"
+【AITDA 结构要求】
+每篇脚本包含以下六段，用标签标注，严格控制字数：
+▶ 钩子 Hook（约{hook}字）：强烈反问、悬念或反常识开头，让观众停下来
+▶ 兴趣 Interest（约{interest}字）：贴近日常生活，引发共鸣，"这个和你有关"
+▶ 信任 Trust（约{trust}字）：引用论文发现，注明期刊名和年份，用"研究发现/数据显示"引导
+▶ 欲望 Desire（约{desire}字）：转化为对普通人的健康意义，激发改变意愿
+▶ 行动 Action（约{action}字）：引导互动 + 必须以"如有健康问题，请咨询专业医生。"结尾
+▶ 完整串讲：将以上五段整合为一段自然流畅的连续文字，适合数字人完整朗读，不含任何标签或分段符号，语感顺畅、浑然一体
 
-请直接输出解说词正文，不要添加任何标题、序号或说明文字。"""
-
-# ── 用户 Prompt 模板：多段短视频版 ───────────────────────────────────────────
-SEGMENTED_USER_PROMPT_TEMPLATE = """以下是 {date_label} 在 PubMed 上发表的医学研究（共 {count} 篇），请据此撰写 {segments} 个独立的数字人科普短视频解说词。
-
-【论文清单】
-{paper_list}
-
-【输出要求】
-- 共 {segments} 段，每段独立成片，可单独播放
-- 每段长度：80–130字中文（对应约 15–30 秒朗读时长）
-- 每段聚焦 1 个研究发现，不跨段引用
-- 每段引用须标注：（来源：《期刊名》，发表于 XXXX 年）
-- 语气温和、积极、有亲和力，适合数字人口播
-- 每段结尾必须包含："如有健康问题，请咨询专业医生。"
-- 每段之间用 "===第X段===" 作为分隔标记（X 为序号数字）
-
-请严格按格式直接输出，不要添加任何额外说明文字。"""
-
-# ── 用户 Prompt 模板：逐篇独立总结版 ────────────────────────────────────────
-PER_PAPER_USER_PROMPT_TEMPLATE = """以下是 {date_label} 在 PubMed 上发表的 {count} 篇医学研究，请为每篇论文分别撰写一段独立的科普解说词。
-
-【论文清单】
-{paper_list}
-
-【输出格式】（严格按此格式，不要有任何额外内容）
+【输出格式】（严格按此格式，不要添加任何额外内容）
 ===PAPER:1===
-第1篇的科普段落正文
+▶ 钩子
+（钩子内容）
+▶ 兴趣
+（兴趣内容）
+▶ 信任
+（信任内容）
+▶ 欲望
+（欲望内容）
+▶ 行动
+（行动内容）
+▶ 完整串讲
+（将以上五段整合为一段流畅文字）
 
 ===PAPER:2===
-第2篇的科普段落正文
+（同上格式）
 
-……以此类推，共 {count} 篇，每篇一个 ===PAPER:序号=== 标记。
-
-【每段要求】
-- 每段长度约 {words} 字中文
-- 仅基于该篇论文，不引用其他论文内容
-- 用"研究发现"、"数据显示"等引导，注明期刊名和年份
-- 语气温和、积极，适合数字人口播
-- 结尾必须包含："如有健康问题，请咨询专业医生。"
-
-请严格按格式直接输出，不要添加任何额外标题或说明文字。"""
+……共 {count} 篇，每篇一个 ===PAPER:序号=== 标记。"""
 
 
 class DigestGenerator:
-    """拉取 PubMed 论文并调用 AI 生成合规解说词。"""
+    """拉取 PubMed 论文并调用 AI 生成各平台 AITDA 合规脚本。"""
 
     def __init__(self, cfg: Config):
-        self._pubmed = PubMedClient(email=cfg.pubmed_email, api_key=cfg.pubmed_api_key)
+        self._pubmed = PubMedClient(
+            email=cfg.pubmed_email,
+            api_key=cfg.pubmed_api_key,
+            max_results=cfg.pubmed_max_results,
+        )
         self._ai = DeepSeekClient(
             api_key=cfg.deepseek_api_key,
             base_url=cfg.deepseek_base_url,
             model=cfg.deepseek_model,
         )
+        # 按配置文件字数 + 固定比例，构建各平台运行时配置
+        self._platforms: dict[str, PlatformConfig] = {
+            "douyin":      _make_platform_config("douyin",      cfg.douyin_words),
+            "shipinghao":  _make_platform_config("shipinghao",  cfg.shipinghao_words),
+            "xiaohongshu": _make_platform_config("xiaohongshu", cfg.xiaohongshu_words),
+        }
 
-    def generate(
-        self,
-        target_date: date,
-        segments: int = 1,
-        per_paper: bool = False,
-        words: int = 500,
-    ) -> str:
+    def generate(self, target_date: date, platforms: list[str]) -> str:
         date_label = target_date.strftime("%Y年%m月%d日")
 
         papers = self._pubmed.fetch_by_date(target_date)
@@ -129,38 +197,38 @@ class DigestGenerator:
                 "当日未检索到符合主题的 PubMed 论文，请检查网络连接或稍后重试。"
             )
 
-        header = _build_header(target_date, papers, segments, per_paper, words)
         paper_list = _format_paper_list(papers)
+        header = _build_header(target_date, papers, [self._platforms[k] for k in platforms])
 
-        if per_paper:
-            logger.info("共 %d 篇论文，逐篇生成解说词（每段约 %d 字），正在调用 AI...", len(papers), words)
-            user_prompt = PER_PAPER_USER_PROMPT_TEMPLATE.format(
+        platform_sections: list[str] = []
+        for platform_key in platforms:
+            pcfg = self._platforms[platform_key]
+            logger.info(
+                "【%s】总字数 %d（钩子%d/兴趣%d/信任%d/欲望%d/行动%d），共 %d 篇，正在调用 AI...",
+                pcfg.name, pcfg.total_words,
+                pcfg.hook, pcfg.interest, pcfg.trust, pcfg.desire, pcfg.action,
+                len(papers),
+            )
+            user_prompt = AITDA_USER_PROMPT_TEMPLATE.format(
                 date_label=date_label,
                 count=len(papers),
+                platform_name=pcfg.name,
+                style=pcfg.style,
+                duration=pcfg.duration,
+                total_words=pcfg.total_words,
+                hook=pcfg.hook,
+                interest=pcfg.interest,
+                trust=pcfg.trust,
+                desire=pcfg.desire,
+                action=pcfg.action,
                 paper_list=paper_list,
-                words=words,
             )
             raw = self._ai.chat(SYSTEM_PROMPT, user_prompt).strip()
-            script = _inject_links(raw, papers)
-        elif segments > 1:
-            logger.info("共 %d 篇论文，生成 %d 段解说词，正在调用 AI...", len(papers), segments)
-            user_prompt = SEGMENTED_USER_PROMPT_TEMPLATE.format(
-                date_label=date_label,
-                count=len(papers),
-                paper_list=paper_list,
-                segments=segments,
-            )
-            script = self._ai.chat(SYSTEM_PROMPT, user_prompt).strip()
-        else:
-            logger.info("共 %d 篇论文，生成完整解说词，正在调用 AI...", len(papers))
-            user_prompt = USER_PROMPT_TEMPLATE.format(
-                date_label=date_label,
-                count=len(papers),
-                paper_list=paper_list,
-            )
-            script = self._ai.chat(SYSTEM_PROMPT, user_prompt).strip()
+            section = _parse_and_inject(raw, papers, pcfg)
+            platform_sections.append(section)
 
-        return header + "\n\n" + script
+        divider = "\n\n" + "─" * 40 + "\n\n"
+        return header + "\n\n" + divider.join(platform_sections)
 
 
 def _format_paper_list(papers: list[Paper]) -> str:
@@ -170,42 +238,42 @@ def _format_paper_list(papers: list[Paper]) -> str:
         if p.authors:
             lines.append(f"   作者：{p.authors}")
         lines.append(f"   期刊：{p.journal}（{p.year}）")
-        
-        # 将原本的 p.abstract 替换为 p.full_text
-        if getattr(p, 'full_text', p.abstract):
-            lines.append(f"   研究内容：{getattr(p, 'full_text', p.abstract)}")
+        content = getattr(p, "full_text", None) or p.abstract
+        if content:
+            lines.append(f"   研究内容：{content}")
         lines.append("")
     return "\n".join(lines)
 
 
-def _inject_links(raw: str, papers: list[Paper]) -> str:
-    """将 AI 输出中的 ===PAPER:N=== 标记替换为带序号标题和 PubMed 链接的段落。"""
-    import re
-
+def _parse_and_inject(raw: str, papers: list[Paper], pcfg: PlatformConfig) -> str:
+    """解析 ===PAPER:N=== 标记，注入平台标题和 PubMed 来源链接。"""
     parts = re.split(r"===PAPER:(\d+)===", raw)
-    # parts[0] 是首个标记之前的内容（通常为空），之后每两个元素为 (index_str, text)
-    result_blocks: list[str] = []
+    blocks: list[str] = []
+
     it = iter(parts[1:])
     for idx_str, text in zip(it, it):
         idx = int(idx_str)
-        para = text.strip()
-        if not para:
+        body = text.strip()
+        if not body or not (1 <= idx <= len(papers)):
             continue
-        if 1 <= idx <= len(papers):
-            p = papers[idx - 1]
-            link = f"https://pubmed.ncbi.nlm.nih.gov/{p.pmid}/"
-            result_blocks.append(
-                f"【第{idx}篇】\n"
-                f"{para}\n"
-                f"来源：《{p.journal}》{p.year} | {link}"
-            )
-        else:
-            result_blocks.append(para)
+        p = papers[idx - 1]
+        link = f"https://pubmed.ncbi.nlm.nih.gov/{p.pmid}/"
+        blocks.append(
+            f"【第{idx}篇】\n"
+            f"{body}\n"
+            f"来源：《{p.journal}》{p.year} | {link}"
+        )
 
-    return "\n\n".join(result_blocks)
+    platform_header = (
+        f"{'=' * 40}\n"
+        f"  {pcfg.name}  |  {pcfg.duration}  |  {pcfg.total_words}字"
+        f"  （钩子{pcfg.hook}/兴趣{pcfg.interest}/信任{pcfg.trust}/欲望{pcfg.desire}/行动{pcfg.action}）\n"
+        f"{'=' * 40}"
+    )
+    return platform_header + "\n\n" + "\n\n".join(blocks)
 
 
-def _build_header(target_date: date, papers: list[Paper], segments: int = 1, per_paper: bool = False, words: int = 500) -> str:
+def _build_header(target_date: date, papers: list[Paper], platform_cfgs: list[PlatformConfig]) -> str:
     seen: set[str] = set()
     journals: list[str] = []
     for p in papers:
@@ -215,17 +283,12 @@ def _build_header(target_date: date, papers: list[Paper], segments: int = 1, per
             if len(journals) >= 5:
                 break
 
-    if per_paper:
-        mode_info = f"模式：逐篇独立总结（共 {len(papers)} 段，每段约 {words} 字，含 PubMed 链接）\n"
-    elif segments > 1:
-        mode_info = f"模式：短视频分段（共 {segments} 段，每段约 15–30 秒）\n"
-    else:
-        mode_info = ""
+    platform_names = "、".join(pc.name for pc in platform_cfgs)
     return (
-        f"=== PubMed 每日健康科普解说词 ===\n"
+        f"=== PubMed 每日健康科普脚本（AITDA 结构）===\n"
         f"日期：{target_date.strftime('%Y年%m月%d日')}\n"
         f"检索论文数：{len(papers)} 篇\n"
-        f"{mode_info}"
+        f"生成平台：{platform_names}\n"
         f"来源期刊（部分）：{'、'.join(journals)}\n"
         + "=" * 40
     )

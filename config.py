@@ -15,11 +15,14 @@ class Config:
     pubmed_api_key: str = field(default_factory=lambda: os.environ.get("PUBMED_API_KEY", ""))
     pubmed_email: str = field(default_factory=lambda: os.environ.get("PUBMED_EMAIL", ""))
     output_dir: str = field(default_factory=lambda: os.environ.get("OUTPUT_DIR", ""))
-    # 将解说词拆分为几个短视频片段（每段约 80-130 字，对应 15-30 秒）
-    # 设为 1 则生成完整长文（450-650 字）
-    digest_segments: int = field(default_factory=lambda: int(os.environ.get("DIGEST_SEGMENTS", "1")))
-    # 逐篇模式下每段的目标字数（默认 500 字）
-    digest_words: int = field(default_factory=lambda: int(os.environ.get("DIGEST_WORDS", "500")))
+    # 每次从 PubMed 最多抓取的论文篇数（默认 30）
+    pubmed_max_results: int = field(default_factory=lambda: int(os.environ.get("PUBMED_MAX_RESULTS", "30")))
+    # 生成哪些平台的脚本：all 或逗号分隔的平台列表（douyin、shipinghao、xiaohongshu）
+    platforms: str = field(default_factory=lambda: os.environ.get("PLATFORMS", "all"))
+    # 各平台 AITDA 脚本总字数（AITDA 各段按比例自动计算：钩子10%/兴趣25%/信任31%/欲望25%/行动~9%）
+    douyin_words: int = field(default_factory=lambda: int(os.environ.get("DOUYIN_WORDS", "240")))
+    shipinghao_words: int = field(default_factory=lambda: int(os.environ.get("SHIPINGHAO_WORDS", "300")))
+    xiaohongshu_words: int = field(default_factory=lambda: int(os.environ.get("XIAOHONGSHU_WORDS", "210")))
 
     def validate(self) -> None:
         if not self.deepseek_api_key:

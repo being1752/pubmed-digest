@@ -25,7 +25,7 @@ TOPICS_QUERY = """(
   "primary prevention"[MeSH Terms] OR "disease prevention"[Title/Abstract]
 ) AND humans[MeSH Terms] AND hasabstract[text] AND English[Language]"""
 
-MAX_RESULTS = 30  # 每次最多抓取的论文篇数
+MAX_RESULTS = 30  # 默认每次最多抓取的论文篇数（可通过构造函数覆盖）
 
 @dataclass
 class Paper:
@@ -41,8 +41,9 @@ class Paper:
 class PubMedClient:
     """封装 Bio.Entrez 的 PubMed 检索，并自动尝试拉取全文。"""
 
-    def __init__(self, email: str, api_key: str = ""):
+    def __init__(self, email: str, api_key: str = "", max_results: int = MAX_RESULTS):
         self.email = email
+        self.max_results = max_results
         Entrez.email = email
         if api_key:
             Entrez.api_key = api_key
@@ -58,13 +59,13 @@ class PubMedClient:
             datetype="pdat",
             mindate=date_str,
             maxdate=date_str,
-            retmax=MAX_RESULTS,
+            retmax=self.max_results,
             usehistory="y",
         ) as handle:
             search_result = Entrez.read(handle)
 
         total = int(search_result.get("Count", 0))
-        logger.info("检索命中：%d 篇（最多抓取 %d 篇）", total, MAX_RESULTS)
+        logger.info("检索命中：%d 篇（最多抓取 %d 篇）", total, self.max_results)
 
         if total == 0:
             return []
@@ -79,7 +80,7 @@ class PubMedClient:
             query_key=query_key,
             rettype="medline",
             retmode="text",
-            retmax=MAX_RESULTS,
+            retmax=self.max_results,
         ) as handle:
             records = list(Medline.parse(handle))
 

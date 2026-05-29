@@ -38,16 +38,11 @@ def parse_args() -> argparse.Namespace:
         help="输出目录（覆盖 OUTPUT_DIR 环境变量；留空则打印到 stdout）",
     )
     parser.add_argument(
-        "--segments",
-        metavar="N",
-        type=int,
-        help="将解说词拆分为 N 个短视频片段，每段约 15–30 秒（覆盖 DIGEST_SEGMENTS 环境变量；默认 1）",
-    )
-    parser.add_argument(
-        "--words",
-        metavar="N",
-        type=int,
-        help="逐篇模式下每段的目标字数（覆盖 DIGEST_WORDS 环境变量；默认 500）",
+        "--platform",
+        metavar="PLATFORM",
+        choices=["douyin", "shipinghao", "xiaohongshu", "all"],
+        default=None,
+        help="生成指定平台的脚本（douyin/shipinghao/xiaohongshu/all；覆盖 PLATFORMS 环境变量；默认 all）",
     )
     return parser.parse_args()
 
@@ -75,11 +70,21 @@ def main() -> None:
 
     logger.info("目标日期：%s", target_date.strftime("%Y-%m-%d"))
 
-    # 生成解说词
+    # 解析平台列表
+    _ALL_PLATFORMS = ["douyin", "shipinghao", "xiaohongshu"]
+    platform_raw = args.platform if args.platform is not None else cfg.platforms
+    if platform_raw == "all":
+        platforms = _ALL_PLATFORMS
+    else:
+        platforms = [p.strip() for p in platform_raw.split(",") if p.strip() in _ALL_PLATFORMS]
+        if not platforms:
+            logger.error("PLATFORMS 配置无效：%s，可选值：douyin、shipinghao、xiaohongshu、all", platform_raw)
+            sys.exit(1)
+    logger.info("生成平台：%s", "、".join(platforms))
+
+    # 生成 AITDA 脚本
     generator = DigestGenerator(cfg)
-    segments = args.segments if args.segments is not None else cfg.digest_segments
-    words = args.words if args.words is not None else cfg.digest_words
-    result = generator.generate(target_date, segments=segments, per_paper=True, words=words)
+    result = generator.generate(target_date, platforms=platforms)
 
     # 确定输出目录（命令行参数 > 环境变量）
     output_dir = args.outdir or cfg.output_dir

@@ -93,7 +93,7 @@ PER_PAPER_USER_PROMPT_TEMPLATE = """以下是 {date_label} 在 PubMed 上发表�
 ……以此类推，共 {count} 篇，每篇一个 ===PAPER:序号=== 标记。
 
 【每段要求】
-- 80–130字中文，对应约 15–30 秒朗读时长
+- 每段长度约 {words} 字中文
 - 仅基于该篇论文，不引用其他论文内容
 - 用"研究发现"、"数据显示"等引导，注明期刊名和年份
 - 语气温和、积极，适合数字人口播
@@ -118,6 +118,7 @@ class DigestGenerator:
         target_date: date,
         segments: int = 1,
         per_paper: bool = False,
+        words: int = 500,
     ) -> str:
         date_label = target_date.strftime("%Y年%m月%d日")
 
@@ -128,15 +129,16 @@ class DigestGenerator:
                 "当日未检索到符合主题的 PubMed 论文，请检查网络连接或稍后重试。"
             )
 
-        header = _build_header(target_date, papers, segments, per_paper)
+        header = _build_header(target_date, papers, segments, per_paper, words)
         paper_list = _format_paper_list(papers)
 
         if per_paper:
-            logger.info("共 %d 篇论文，逐篇生成解说词，正在调用 AI...", len(papers))
+            logger.info("共 %d 篇论文，逐篇生成解说词（每段约 %d 字），正在调用 AI...", len(papers), words)
             user_prompt = PER_PAPER_USER_PROMPT_TEMPLATE.format(
                 date_label=date_label,
                 count=len(papers),
                 paper_list=paper_list,
+                words=words,
             )
             raw = self._ai.chat(SYSTEM_PROMPT, user_prompt).strip()
             script = _inject_links(raw, papers)
@@ -168,8 +170,10 @@ def _format_paper_list(papers: list[Paper]) -> str:
         if p.authors:
             lines.append(f"   作者：{p.authors}")
         lines.append(f"   期刊：{p.journal}（{p.year}）")
-        if p.abstract:
-            lines.append(f"   摘要：{p.abstract}")
+        
+        # 将原本的 p.abstract 替换为 p.full_text
+        if getattr(p, 'full_text', p.abstract):
+            lines.append(f"   研究内容：{getattr(p, 'full_text', p.abstract)}")
         lines.append("")
     return "\n".join(lines)
 
@@ -201,7 +205,7 @@ def _inject_links(raw: str, papers: list[Paper]) -> str:
     return "\n\n".join(result_blocks)
 
 
-def _build_header(target_date: date, papers: list[Paper], segments: int = 1, per_paper: bool = False) -> str:
+def _build_header(target_date: date, papers: list[Paper], segments: int = 1, per_paper: bool = False, words: int = 500) -> str:
     seen: set[str] = set()
     journals: list[str] = []
     for p in papers:
@@ -212,7 +216,7 @@ def _build_header(target_date: date, papers: list[Paper], segments: int = 1, per
                 break
 
     if per_paper:
-        mode_info = f"模式：逐篇独立总结（共 {len(papers)} 段，每段含 PubMed 链接）\n"
+        mode_info = f"模式：逐篇独立总结（共 {len(papers)} 段，每段约 {words} 字，含 PubMed 链接）\n"
     elif segments > 1:
         mode_info = f"模式：短视频分段（共 {segments} 段，每段约 15–30 秒）\n"
     else:

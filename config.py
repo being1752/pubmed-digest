@@ -18,6 +18,8 @@ class Config:
     # 将解说词拆分为几个短视频片段（每段约 80-130 字，对应 15-30 秒）
     # 设为 1 则生成完整长文（450-650 字）
     digest_segments: int = field(default_factory=lambda: int(os.environ.get("DIGEST_SEGMENTS", "1")))
+    # 逐篇模式下每段的目标字数（默认 500 字）
+    digest_words: int = field(default_factory=lambda: int(os.environ.get("DIGEST_WORDS", "500")))
 
     def validate(self) -> None:
         if not self.deepseek_api_key:

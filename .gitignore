@@ -7,8 +7,9 @@ venv/
 __pycache__/
 *.pyc
 
-# 生成的输出文件（日期命名的解说词，如 2026-05-28.txt）
-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].txt
+# 排除所有 txt 文件（但保留 requirements.txt）
+*.txt
+!requirements.txt
 
 # IDE
 .vscode/

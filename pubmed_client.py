@@ -1,17 +1,18 @@
-"""PubMed E-utilities 客户端，基于 Biopython Bio.Entrez。"""
+"""PubMed E-utilities 客户端，并集成 EuropePMC 与 Unpaywall 获取全文全文。"""
 
 import time
 import logging
+import requests
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
 from Bio import Entrez, Medline
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
 # ── PubMed 检索式 ────────────────────────────────────────────────────────────
-# 涵盖：免疫/自愈、营养、睡眠/运动/生活方式、心理健康、肠道菌群、衰老、慢性病预防
 TOPICS_QUERY = """(
   immunity[MeSH Terms] OR "immune system"[MeSH Terms] OR "self healing"[Title/Abstract] OR
   nutrition[MeSH Terms] OR diet[MeSH Terms] OR "dietary pattern"[Title/Abstract] OR
@@ -26,7 +27,6 @@ TOPICS_QUERY = """(
 
 MAX_RESULTS = 30  # 每次最多抓取的论文篇数
 
-
 @dataclass
 class Paper:
     pmid: str
@@ -34,29 +34,24 @@ class Paper:
     abstract: str
     journal: str
     year: str
-    authors: str  # "First Author et al."
+    authors: str
+    full_text: str = "" # 新增：用于存储抓取到的全文内容
 
 
 class PubMedClient:
-    """封装 Bio.Entrez 的 PubMed 检索与抓取。"""
+    """封装 Bio.Entrez 的 PubMed 检索，并自动尝试拉取全文。"""
 
     def __init__(self, email: str, api_key: str = ""):
-        """
-        Args:
-            email:   NCBI 要求的联系邮箱（任意邮箱即可，无需注册）。
-            api_key: PubMed API Key（可选）。有 key 时请求频率上限从 3/s 提升至 10/s。
-                     免费申请：https://www.ncbi.nlm.nih.gov/account/
-        """
+        self.email = email
         Entrez.email = email
         if api_key:
             Entrez.api_key = api_key
+        self.headers = {'User-Agent': 'PubMed-Digest-Bot/1.0'}
 
     def fetch_by_date(self, target_date: date) -> list[Paper]:
-        """检索指定日期发表的相关论文并返回解析结果。"""
         date_str = target_date.strftime("%Y/%m/%d")
         logger.info("正在检索 PubMed，日期：%s", date_str)
 
-        # 第一步：esearch 获取 WebEnv / QueryKey
         with Entrez.esearch(
             db="pubmed",
             term=TOPICS_QUERY,
@@ -76,11 +71,8 @@ class PubMedClient:
 
         web_env = search_result["WebEnv"]
         query_key = search_result["QueryKey"]
-
-        # NCBI 建议相邻请求间隔 ≥ 0.34s（无 key）
         time.sleep(0.4)
 
-        # 第二步：efetch 拉取详情（MEDLINE 格式，解析最稳定）
         with Entrez.efetch(
             db="pubmed",
             webenv=web_env,
@@ -91,44 +83,73 @@ class PubMedClient:
         ) as handle:
             records = list(Medline.parse(handle))
 
-        papers = [self._parse_record(r) for r in records]
-        # 过滤掉没有摘要或标题的条目
-        papers = [p for p in papers if p.title and p.abstract]
+        papers = []
+        for r in records:
+            paper = self._parse_record(r)
+            if paper.title and paper.abstract:
+                # 尝试获取全文，如果获取不到则回退到完整摘要
+                logger.info(f"正在尝试获取全文 PMID: {paper.pmid}...")
+                full_text = self._fetch_full_text(paper.pmid)
+                paper.full_text = full_text if full_text else paper.abstract
+                
+                # 对送给大模型的文本进行合理截断 (比如 8000 字符，防止 Token 超限，但足够包含核心机制)
+                if len(paper.full_text) > 8000:
+                    paper.full_text = paper.full_text[:8000] + "\n...[Content Truncated]..."
+                
+                papers.append(paper)
 
-        logger.info("有效论文（含摘要）：%d 篇", len(papers))
+        logger.info("有效论文（含摘要/全文）：%d 篇", len(papers))
         return papers
 
-    # ── 内部解析 ────────────────────────────────────────────────────────────
+    def _fetch_full_text(self, pmid: str) -> str:
+        """策略：通过 Europe PMC 拉取结构化全文文本。"""
+        url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+        params = {"query": f"ext_id:{pmid}", "resultType": "core", "format": "json"}
+        
+        try:
+            response = requests.get(url, params=params, headers=self.headers, timeout=10)
+            if response.status_code == 200:
+                results = response.json().get('resultList', {}).get('result', [])
+                if results:
+                    article = results[0]
+                    if article.get('isOpenAccess') == 'Y' and 'pmcid' in article:
+                        pmcid = article['pmcid']
+                        return self._get_epmc_xml_body(pmcid)
+        except Exception as e:
+            logger.debug(f"Europe PMC 获取全文失败 PMID {pmid}: {e}")
+        return ""
+
+    def _get_epmc_xml_body(self, pmcid: str) -> str:
+        """解析 XML 提取正文内容，摒弃无用的参考文献标记。"""
+        url = f"https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
+        try:
+            response = requests.get(url, headers=self.headers, timeout=10)
+            if response.status_code == 200:
+                # 简单清洗 XML 提取文本
+                root = ET.fromstring(response.content)
+                body = root.find('.//body')
+                if body is not None:
+                    return "".join(body.itertext())
+        except Exception:
+            pass
+        return ""
+
     @staticmethod
     def _parse_record(record: dict) -> Paper:
         pmid = record.get("PMID", "")
         title = record.get("TI", "").strip()
-
-        # 摘要：MEDLINE 格式中摘要字段为 "AB"
-        abstract = record.get("AB", "").strip()
-        # 截断至 500 字符，避免 AI prompt 过长
-        if len(abstract) > 500:
-            abstract = abstract[:500] + "..."
-
-        journal = record.get("JT", "") or record.get("TA", "")  # 全称 / 缩写
-
-        # 发表年份从 DP (Date of Publication) 字段取前 4 位
+        
+        # 提取完整摘要，不再进行 500 字符的粗暴截断
+        abstract = record.get("AB", "").strip() 
+        journal = record.get("JT", "") or record.get("TA", "")
+        
         dp = record.get("DP", "")
         year = dp[:4] if len(dp) >= 4 else ""
-
-        # 作者列表：AU 字段为 ["Last FM", ...]
+        
         au_list: list[str] = record.get("AU", [])
         if au_list:
-            first = au_list[0]
-            authors = f"{first} et al." if len(au_list) > 1 else first
+            authors = f"{au_list[0]} et al." if len(au_list) > 1 else au_list[0]
         else:
             authors = ""
 
-        return Paper(
-            pmid=pmid,
-            title=title,
-            abstract=abstract,
-            journal=journal,
-            year=year,
-            authors=authors,
-        )
+        return Paper(pmid=pmid, title=title, abstract=abstract, journal=journal, year=year, authors=authors)

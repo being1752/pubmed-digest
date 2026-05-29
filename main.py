@@ -43,6 +43,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="将解说词拆分为 N 个短视频片段，每段约 15–30 秒（覆盖 DIGEST_SEGMENTS 环境变量；默认 1）",
     )
+    parser.add_argument(
+        "--words",
+        metavar="N",
+        type=int,
+        help="逐篇模式下每段的目标字数（覆盖 DIGEST_WORDS 环境变量；默认 500）",
+    )
     return parser.parse_args()
 
 
@@ -72,7 +78,8 @@ def main() -> None:
     # 生成解说词
     generator = DigestGenerator(cfg)
     segments = args.segments if args.segments is not None else cfg.digest_segments
-    result = generator.generate(target_date, segments=segments, per_paper=True)
+    words = args.words if args.words is not None else cfg.digest_words
+    result = generator.generate(target_date, segments=segments, per_paper=True, words=words)
 
     # 确定输出目录（命令行参数 > 环境变量）
     output_dir = args.outdir or cfg.output_dir

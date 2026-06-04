@@ -78,9 +78,9 @@ python main.py --outdir ./output
 | `OUTPUT_DIR` | 空（仅打印 stdout） | 脚本文件保存目录 |
 | `PUBMED_MAX_RESULTS` | `30` | 每次最多抓取的论文篇数 |
 | `PLATFORMS` | `all` | 生成哪些平台；`all` 或逗号分隔：`douyin,shipinghao,xiaohongshu` |
-| `DOUYIN_WORDS` | `240` | 抖音脚本总字数 |
-| `SHIPINGHAO_WORDS` | `300` | 视频号脚本总字数 |
-| `XIAOHONGSHU_WORDS` | `210` | 小红书脚本总字数 |
+| `DOUYIN_WORDS` | `240` | 抖音脚本总字数（推荐 150–300，对应 30–60 秒） |
+| `SHIPINGHAO_WORDS` | `300` | 视频号脚本总字数（推荐 250–450，对应 60–90 秒） |
+| `XIAOHONGSHU_WORDS` | `210` | 小红书脚本总字数（推荐 150–250，对应 30–50 秒） |
 
 ---
 

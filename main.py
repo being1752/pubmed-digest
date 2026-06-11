@@ -44,6 +44,23 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="生成指定平台的脚本（douyin/shipinghao/xiaohongshu/all；覆盖 PLATFORMS 环境变量；默认 all）",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["health", "business"],
+        default=None,
+        help="内容模式：health（健康科普，默认）或 business（商业赛道·视频号口播）",
+    )
+    parser.add_argument(
+        "--topic",
+        metavar="KEYWORD",
+        help='专题关键词，如 "sleep"、"gut microbiome"；指定后按专题+时间范围查询',
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        metavar="N",
+        help="回溯天数（与 --topic 配合使用，默认 7）",
+    )
     return parser.parse_args()
 
 
@@ -52,6 +69,9 @@ def main() -> None:
 
     # 加载配置
     cfg = Config()
+    # --mode 命令行参数优先于环境变量
+    if args.mode is not None:
+        cfg.content_mode = args.mode
     try:
         cfg.validate()
     except ValueError as e:
@@ -69,8 +89,9 @@ def main() -> None:
         target_date = date.today() - timedelta(days=1)
 
     logger.info("目标日期：%s", target_date.strftime("%Y-%m-%d"))
+    logger.info("内容模式：%s", cfg.content_mode)
 
-    # 解析平台列表
+    # 解析平台列表（两种模式均支持多平台）
     _ALL_PLATFORMS = ["douyin", "shipinghao", "xiaohongshu"]
     platform_raw = args.platform if args.platform is not None else cfg.platforms
     if platform_raw == "all":
@@ -82,9 +103,16 @@ def main() -> None:
             sys.exit(1)
     logger.info("生成平台：%s", "、".join(platforms))
 
+    # 确定专题和时间范围（命令行参数优先于配置文件）
+    topic = args.topic if args.topic is not None else cfg.pubmed_topic
+    days_back = args.days if args.days is not None else cfg.pubmed_days_back
+    if topic:
+        logger.info("专题模式：%s，回溯 %d 天", topic, days_back)
+
     # 生成 AITDA 脚本
     generator = DigestGenerator(cfg)
-    result = generator.generate(target_date, platforms=platforms)
+    result = generator.generate(target_date, platforms=platforms,
+                                topic=topic, days_back=days_back)
 
     # 确定输出目录（命令行参数 > 环境变量）
     output_dir = args.outdir or cfg.output_dir
@@ -92,7 +120,11 @@ def main() -> None:
     if output_dir:
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
-        file_path = out_path / f"{target_date.strftime('%Y-%m-%d')}.txt"
+        if topic:
+            filename = f"{topic}_{target_date.strftime('%Y-%m-%d')}.txt"
+        else:
+            filename = f"{target_date.strftime('%Y-%m-%d')}.txt"
+        file_path = out_path / filename
         file_path.write_text(result, encoding="utf-8")
         logger.info("解说词已保存至：%s", file_path)
         print(result)

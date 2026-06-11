@@ -45,6 +45,14 @@ python main.py --platform shipinghao
 
 # 保存到文件（以日期命名，如 2026-05-28.txt）
 python main.py --outdir ./output
+
+# 专题模式：查睡眠专题最近 7 天的论文（新增）
+python main.py --topic sleep --days 7
+
+# 专题模式 + 指定输出
+python main.py --topic "gut microbiome" --days 14 --outdir ./output
+
+# 专题模式也可通过 .env 配置，无需每次输入命令行参数
 ```
 
 ---
@@ -56,6 +64,8 @@ python main.py --outdir ./output
 | `--date YYYY-MM-DD` | 目标日期 | 昨天 |
 | `--platform` | `douyin` / `shipinghao` / `xiaohongshu` / `all` | 读取 `PLATFORMS` 配置 |
 | `--outdir DIR` | 输出目录，同时保存文件并打印到 stdout | 读取 `OUTPUT_DIR` 配置 |
+| `--topic KEYWORD` | 专题关键词（如 `sleep`），开启专题+时间范围查询 | 读取 `PUBMED_TOPIC` 配置 |
+| `--days N` | 回溯天数（与 `--topic` 配合使用） | 读取 `PUBMED_DAYS_BACK` 配置（默认 1） |
 
 ---
 
@@ -81,6 +91,8 @@ python main.py --outdir ./output
 | `DOUYIN_WORDS` | `240` | 抖音脚本总字数（推荐 150–300，对应 30–60 秒） |
 | `SHIPINGHAO_WORDS` | `300` | 视频号脚本总字数（推荐 250–450，对应 60–90 秒） |
 | `XIAOHONGSHU_WORDS` | `210` | 小红书脚本总字数（推荐 150–250，对应 30–50 秒） |
+| `PUBMED_TOPIC` | 空 | 专题关键词（如 `sleep`），开启专题查询模式；空=使用默认综合健康查询 |
+| `PUBMED_DAYS_BACK` | `1` | 回溯天数（配合 `PUBMED_TOPIC` 使用） |
 
 ---
 

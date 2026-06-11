@@ -4,7 +4,7 @@ import time
 import logging
 import requests
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from Bio import Entrez, Medline
@@ -92,11 +92,83 @@ class PubMedClient:
                 logger.info(f"正在尝试获取全文 PMID: {paper.pmid}...")
                 full_text = self._fetch_full_text(paper.pmid)
                 paper.full_text = full_text if full_text else paper.abstract
-                
+                # print(f"[PMID {paper.pmid}] 全文内容：\n{paper.full_text}\n{'='*80}")
                 # 对送给大模型的文本进行合理截断 (比如 8000 字符，防止 Token 超限，但足够包含核心机制)
                 if len(paper.full_text) > 8000:
                     paper.full_text = paper.full_text[:8000] + "\n...[Content Truncated]..."
                 
+                papers.append(paper)
+
+        logger.info("有效论文（含摘要/全文）：%d 篇", len(papers))
+        return papers
+
+    def fetch_by_topic(self, topic: str, days_back: int = 7) -> list[Paper]:
+        """按专题关键词和回溯天数检索 PubMed。
+
+        Parameters
+        ----------
+        topic : str
+            专题关键词，如 "sleep"、"gut microbiome"
+        days_back : int
+            回溯天数，如 7 = 查最近 7 天
+
+        Returns
+        -------
+        list[Paper]
+        """
+        end_date = date.today()
+        start_date = end_date - timedelta(days=days_back - 1)
+        logger.info(
+            "正在检索 PubMed，专题：%s，日期范围：%s ~ %s",
+            topic, start_date.strftime("%Y/%m/%d"), end_date.strftime("%Y/%m/%d"),
+        )
+
+        # 动态构建查询：专题关键词 + 公共过滤条件
+        query = (
+            f'({topic}[Title/Abstract] OR {topic}[MeSH Terms]) '
+            f'AND humans[MeSH Terms] AND hasabstract[text] AND English[Language]'
+        )
+
+        with Entrez.esearch(
+            db="pubmed",
+            term=query,
+            datetype="pdat",
+            mindate=start_date.strftime("%Y/%m/%d"),
+            maxdate=end_date.strftime("%Y/%m/%d"),
+            retmax=self.max_results,
+            usehistory="y",
+        ) as handle:
+            search_result = Entrez.read(handle)
+
+        total = int(search_result.get("Count", 0))
+        logger.info("检索命中：%d 篇（最多抓取 %d 篇）", total, self.max_results)
+
+        if total == 0:
+            return []
+
+        web_env = search_result["WebEnv"]
+        query_key = search_result["QueryKey"]
+        time.sleep(0.4)
+
+        with Entrez.efetch(
+            db="pubmed",
+            webenv=web_env,
+            query_key=query_key,
+            rettype="medline",
+            retmode="text",
+            retmax=self.max_results,
+        ) as handle:
+            records = list(Medline.parse(handle))
+
+        papers = []
+        for r in records:
+            paper = self._parse_record(r)
+            if paper.title and paper.abstract:
+                logger.info(f"正在尝试获取全文 PMID: {paper.pmid}...")
+                full_text = self._fetch_full_text(paper.pmid)
+                paper.full_text = full_text if full_text else paper.abstract
+                if len(paper.full_text) > 8000:
+                    paper.full_text = paper.full_text[:8000] + "\n...[Content Truncated]..."
                 papers.append(paper)
 
         logger.info("有效论文（含摘要/全文）：%d 篇", len(papers))

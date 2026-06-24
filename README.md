@@ -34,7 +34,7 @@ PUBMED_EMAIL=任意邮箱（NCBI 要求，无需注册）
 ### 3. 运行
 
 ```bash
-# 生成昨天的脚本，所有平台，输出到 stdout
+# 生成昨天的脚本，所有平台，默认保存到 ./output 并打印到 stdout
 python main.py
 
 # 指定日期
@@ -43,7 +43,7 @@ python main.py --date 2026-05-28
 # 只生成视频号版
 python main.py --platform shipinghao
 
-# 保存到文件（以日期命名，如 2026-05-28.txt）
+# 指定保存目录（以日期和模式命名，如 2026-05-28_health.txt）
 python main.py --outdir ./output
 
 # 专题模式：查睡眠专题最近 7 天的论文（新增）
@@ -85,7 +85,7 @@ python main.py --topic "gut microbiome" --days 14 --outdir ./output
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API 地址 |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名称 |
 | `PUBMED_API_KEY` | 空 | PubMed API Key，可提升速率至 10次/秒（[免费申请](https://www.ncbi.nlm.nih.gov/account/)） |
-| `OUTPUT_DIR` | 空（仅打印 stdout） | 脚本文件保存目录 |
+| `OUTPUT_DIR` | `./output` | 脚本文件保存目录 |
 | `PUBMED_MAX_RESULTS` | `30` | 每次最多抓取的论文篇数 |
 | `PLATFORMS` | `all` | 生成哪些平台；`all` 或逗号分隔：`douyin,shipinghao,xiaohongshu` |
 | `DOUYIN_WORDS` | `240` | 抖音脚本总字数（推荐 150–300，对应 30–60 秒） |

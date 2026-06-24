@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--outdir",
         metavar="DIR",
-        help="输出目录（覆盖 OUTPUT_DIR 环境变量；留空则打印到 stdout）",
+        help="输出目录（覆盖 OUTPUT_DIR 环境变量；默认 ./output）",
     )
     parser.add_argument(
         "--platform",
@@ -120,10 +120,12 @@ def main() -> None:
     if output_dir:
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
+        mode_suffix = cfg.content_mode
+        date_part = target_date.strftime('%Y-%m-%d')
         if topic:
-            filename = f"{topic}_{target_date.strftime('%Y-%m-%d')}.txt"
+            filename = f"{topic}_{date_part}_{mode_suffix}.txt"
         else:
-            filename = f"{target_date.strftime('%Y-%m-%d')}.txt"
+            filename = f"{date_part}_{mode_suffix}.txt"
         file_path = out_path / filename
         file_path.write_text(result, encoding="utf-8")
         logger.info("解说词已保存至：%s", file_path)

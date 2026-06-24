@@ -14,7 +14,7 @@ class Config:
     deepseek_model: str = field(default_factory=lambda: os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"))
     pubmed_api_key: str = field(default_factory=lambda: os.environ.get("PUBMED_API_KEY", ""))
     pubmed_email: str = field(default_factory=lambda: os.environ.get("PUBMED_EMAIL", ""))
-    output_dir: str = field(default_factory=lambda: os.environ.get("OUTPUT_DIR", ""))
+    output_dir: str = field(default_factory=lambda: os.environ.get("OUTPUT_DIR", "./output"))
     # 每次从 PubMed 最多抓取的论文篇数（默认 30）
     pubmed_max_results: int = field(default_factory=lambda: int(os.environ.get("PUBMED_MAX_RESULTS", "30")))
     # 专题查询关键词（如 sleep；空字符串=使用默认的通用健康查询）
